@@ -3,13 +3,15 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI32, Ordering},
 };
 
+use pumpkin_data::data_component_impl::{AxolotlVariantImpl, BucketEntityDataImpl};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
-use pumpkin_data::sound::{Sound, SoundCategory};
+use pumpkin_data::sound::Sound;
 use pumpkin_data::tag::{self, Taggable};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::codec::var_int::VarInt;
+use pumpkin_util::math::position::BlockPos;
 use rand::RngExt;
 
 use crate::entity::{
@@ -22,6 +24,7 @@ use crate::entity::{
         swim::SwimGoal, tempt::TemptGoal, try_find_water::TryFindWaterGoal,
         wander_around::WanderAroundGoal,
     },
+    bucketable::{Bucketable, bucket_mob_pickup},
     mob::{Mob, MobEntity},
     passive::animal::Animal,
     player::Player,
@@ -254,6 +257,34 @@ impl Mob for AxolotlEntity {
         &self.mob_entity
     }
 
+    fn check_spawn_obstruction(&self, world: &crate::world::World) -> bool {
+        world.is_unobstructed(self.get_entity())
+    }
+
+    fn get_walk_target_value(&self, _pos: &BlockPos) -> f32 {
+        0.0
+    }
+
+    fn as_bucketable(&self) -> Option<&dyn Bucketable> {
+        Some(self)
+    }
+
+    fn mob_set_variant_name(&self, name: &str) {
+        if let Some(variant) = pumpkin_data::entity_variant::AxolotlVariant::from_name(
+            name.strip_prefix("minecraft:").unwrap_or(name),
+        ) {
+            self.set_variant(AxolotlVariant::from_id(variant.id()));
+        }
+    }
+
+    fn remove_when_far_away(&self, _distance_sq: f64) -> bool {
+        !self.is_from_bucket() && self.get_entity().custom_name.load().is_none()
+    }
+
+    fn requires_custom_persistence(&self) -> bool {
+        self.is_from_bucket()
+    }
+
     fn custom_server_ai_step(&self, _caller: &dyn EntityBase) {
         let play_dead_ticks = self.play_dead_ticks.load(Ordering::Relaxed);
         if play_dead_ticks > 0 {
@@ -285,31 +316,109 @@ impl Mob for AxolotlEntity {
         );
     }
 
+    fn mob_interact_with_hand(
+        &self,
+        player: &Arc<Player>,
+        item_stack: &mut ItemStack,
+        _hand: pumpkin_util::Hand,
+    ) -> Option<bool> {
+        bucket_mob_pickup(player, item_stack, self)
+    }
+
     fn mob_interact(&self, player: &Arc<Player>, item_stack: &mut ItemStack) -> bool {
-        let item = item_stack.get_item();
-
-        if item == &Item::WATER_BUCKET {
-            let entity = self.get_entity();
-            let world = entity.world.load();
-            if let Some(server) = world.server.upgrade() {
-                let mut event = crate::plugin::api::events::player::player_bucket_entity::PlayerBucketEntityEvent {
-                    player: player.clone(),
-                    entity_id: entity.entity_id,
-                    bucket_item: "axolotl_bucket".to_string(),
-                    cancelled: false,
-                };
-                server.plugin_manager.fire_blocking(&server, &mut event);
-                if event.cancelled {
-                    return false;
-                }
-            }
-            item_stack.decrement_unless_creative(player.gamemode.load(), 1);
-            let pos = entity.pos.load();
-            world.play_sound(Sound::ItemBucketFillAxolotl, SoundCategory::Neutral, &pos);
-            entity.remove();
-            return true;
-        }
-
         self.animal_interact(player, item_stack)
+    }
+}
+
+// Use the same capture and release path as fish and tadpoles (upstream #3933 and #3971).
+impl Bucketable for AxolotlEntity {
+    fn is_from_bucket(&self) -> bool {
+        AxolotlEntity::is_from_bucket(self)
+    }
+
+    fn set_from_bucket(&self, from_bucket: bool) {
+        AxolotlEntity::set_from_bucket(self, from_bucket);
+    }
+
+    fn bucket_item(&self) -> &'static Item {
+        &Item::AXOLOTL_BUCKET
+    }
+
+    fn pickup_sound(&self) -> Sound {
+        Sound::ItemBucketFillAxolotl
+    }
+
+    fn save_to_bucket_tag(&self, bucket: &mut ItemStack) {
+        self.save_default_data_to_bucket_tag(bucket);
+        let variant = pumpkin_data::entity_variant::AxolotlVariant::by_id(self.get_variant().id());
+        bucket.set_data_component(AxolotlVariantImpl {
+            value: variant.name().into(),
+        });
+        let mut nbt = bucket
+            .get_data_component::<BucketEntityDataImpl>()
+            .and_then(|data| data.nbt.clone())
+            .unwrap_or_default();
+        nbt.put_int("Age", AgeableMob::get_age(self));
+        nbt.put_bool("AgeLocked", self.is_age_locked());
+        bucket.set_data_component(BucketEntityDataImpl { nbt: Some(nbt) });
+    }
+
+    fn load_from_bucket_tag(&self, nbt: &NbtCompound) {
+        self.load_default_data_from_bucket_tag(nbt);
+        self.set_age(nbt.get_int("Age").unwrap_or(0));
+        self.set_age_locked(nbt.get_bool("AgeLocked").unwrap_or(false));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::ai::test_support::world;
+    use pumpkin_util::math::vector3::Vector3;
+
+    #[tokio::test]
+    async fn axolotl_bucket_preserves_variant_health_and_age()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let source = AxolotlEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(0.5, 64.0, 0.5),
+            &EntityType::AXOLOTL,
+        ));
+        source.set_variant(AxolotlVariant::Blue);
+        source.set_age(-1200);
+        source.set_age_locked(true);
+        source.mob_entity.living_entity.set_health(7.0);
+
+        let mut bucket = ItemStack::new(1, &Item::AXOLOTL_BUCKET);
+        let bucketable = source.as_bucketable().ok_or("missing Bucketable")?;
+        bucketable.save_to_bucket_tag(&mut bucket);
+        let variant = bucket
+            .get_data_component::<AxolotlVariantImpl>()
+            .ok_or("missing axolotl variant")?;
+        let data = bucket
+            .get_data_component::<BucketEntityDataImpl>()
+            .and_then(|data| data.nbt.as_ref())
+            .ok_or("missing bucket NBT")?;
+        assert_eq!(variant.value.as_str(), "blue");
+
+        let released = AxolotlEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(2.5, 64.0, 0.5),
+            &EntityType::AXOLOTL,
+        ));
+        released.set_variant(AxolotlVariant::Gold);
+        released.mob_set_variant_name(&variant.value);
+        released.load_from_bucket_tag(data);
+        released.set_from_bucket(true);
+        assert_eq!(released.get_variant(), AxolotlVariant::Blue);
+        assert_eq!(released.get_age(), -1200);
+        assert!(released.is_age_locked());
+        assert!((released.mob_entity.living_entity.health.load() - 7.0).abs() < f32::EPSILON);
+        assert!(released.requires_custom_persistence());
+        assert!(!released.remove_when_far_away(100_000.0));
+        world.level.shutdown().await;
+        Ok(())
     }
 }
