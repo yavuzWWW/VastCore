@@ -72,6 +72,15 @@ pub async fn run_player_actions_and_disconnect_tests(
         }
     }
 
+    if player1
+        .living_entity
+        .entity
+        .sprinting
+        .load(Ordering::Relaxed)
+    {
+        return Err("Expected TestBot1 sprinting=false after StopSprinting".into());
+    }
+
     summary_lines.push(format!(
         "[PASS] bot:held_slot_and_sprinting_actions ({}ms)",
         action_start.elapsed().as_millis()

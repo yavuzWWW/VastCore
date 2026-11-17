@@ -42,7 +42,10 @@ pub async fn create_test_server(temp_dir: &tempfile::TempDir) -> Result<Arc<Serv
     Server::new(
         basic_config,
         advanced_config,
-        TelemetryConfig::default(),
+        TelemetryConfig {
+            enabled: false,
+            ..Default::default()
+        },
         VanillaData::default(),
         Vec::new(),
     )

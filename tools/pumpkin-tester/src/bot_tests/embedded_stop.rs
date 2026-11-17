@@ -63,12 +63,22 @@ pub async fn run_embedded_stop_test(summary_lines: &mut Vec<String>) -> Result<(
             "EmbeddedBot",
         )
         .await;
-        let player_id = server
-            .get_all_players()
-            .first()
-            .map(|player| player.gameprofile.id);
+        let result = async {
+            let mut bot = joined?;
+            bot.set_held_item(6).await?;
+            for _ in 0..crate::bot::MAX_POLL_TICKS {
+                if let Some(player) = server.get_all_players().first()
+                    && player.inventory.get_selected_slot() == 6
+                {
+                    return Ok::<_, String>((bot, player.gameprofile.id));
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err("EmbeddedBot did not select hotbar slot 6".into())
+        }
+        .await;
         server.stop();
-        joined.map(|bot| (bot, player_id))
+        result
     };
     let ((), joined) = timeout(STOP_TIMEOUT, async {
         tokio::join!(pumpkin_server.start(), session)
@@ -86,17 +96,13 @@ pub async fn run_embedded_stop_test(summary_lines: &mut Vec<String>) -> Result<(
         return Err("Stopping the embedded server stopped the whole process".to_string());
     }
 
-    let player_id = player_id.ok_or("EmbeddedBot never showed up on the server")?;
-    let player_data = server
-        .basic_config
-        .get_world_path()
-        .join("players/data")
-        .join(format!("{player_id}.dat"));
-    if !player_data.exists() {
-        return Err(format!(
-            "Embedded server did not save {}",
-            player_data.display()
-        ));
+    let data = server
+        .player_data_storage
+        .load_data(&player_id)
+        .map_err(|err| format!("Saved player data could not be loaded: {err}"))?
+        .ok_or("Embedded server did not save player data")?;
+    if data.get_int("SelectedItemSlot") != Some(6) {
+        return Err("Embedded shutdown did not persist selected hotbar slot 6".into());
     }
 
     summary_lines.push(format!(

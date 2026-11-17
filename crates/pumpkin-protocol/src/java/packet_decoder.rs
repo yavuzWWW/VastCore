@@ -337,13 +337,13 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_incomplete_frames() {
-        let mut decoder = TCPNetworkDecoder::new(&[4_u8, 1, 42][..]);
+        let mut decoder = TCPNetworkDecoder::new(&[4u8, 1, 42][..]);
         assert!(matches!(
             decoder.get_raw_packet().await,
             Err(PacketDecodeError::MalformedLength(_))
         ));
 
-        let mut decoder = TCPNetworkDecoder::new(&[5_u8, 0, 1, 42][..]);
+        let mut decoder = TCPNetworkDecoder::new(&[5u8, 0, 1, 42][..]);
         decoder.set_compression(256);
         assert!(matches!(
             decoder.get_raw_packet().await,
@@ -353,7 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn decodes_adjacent_frames_with_empty_payload() -> Result<(), PacketDecodeError> {
-        let mut decoder = TCPNetworkDecoder::new(&[1_u8, 1, 2, 2, 42][..]);
+        let mut decoder = TCPNetworkDecoder::new(&[1u8, 1, 2, 2, 42][..]);
         let first = decoder.get_raw_packet().await?;
         assert_eq!(first.id, 1);
         assert!(first.payload.is_empty());
