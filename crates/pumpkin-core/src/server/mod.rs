@@ -694,10 +694,10 @@ impl Server {
     /// You still have to spawn the `Player` in a `World` to let them join and make them visible.
     fn load_player_world(
         &self,
-        id: &uuid::Uuid,
+        data: Option<pumpkin_nbt::compound::NbtCompound>,
     ) -> Option<(Arc<World>, Option<pumpkin_nbt::compound::NbtCompound>)> {
         let first_world = self.worlds.load().first().cloned()?;
-        let Ok(Some(data)) = self.player_data_storage.load_data(id) else {
+        let Some(data) = data else {
             return Some((first_world, None));
         };
         let Some(dimension_key) = data.get_string("Dimension") else {
@@ -722,7 +722,23 @@ impl Server {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .gamemode;
 
-        let (world, nbt) = self.load_player_world(&profile.id)?;
+        let data = match self.player_data_storage.load_data(&profile.id) {
+            Ok(data) => data,
+            Err(err) => {
+                error!(
+                    "Refusing login for {}: failed to load player data: {err}",
+                    profile.id
+                );
+                client.try_kick(
+                    DisconnectReason::Kicked,
+                    &TextComponent::text(
+                        "Your saved player data could not be loaded. Contact the server administrator.",
+                    ),
+                );
+                return None;
+            }
+        };
+        let (world, nbt) = self.load_player_world(data)?;
 
         let mut player = Player::new(
             client,

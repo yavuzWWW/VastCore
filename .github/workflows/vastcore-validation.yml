@@ -41,7 +41,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo nextest run --locked --workspace --no-tests=pass --profile default
       - run: cargo test --locked --doc -p pumpkin-world -p pumpkin-protocol -p pumpkin-core
-      - run: cargo clippy --locked -p pumpkin-world -p pumpkin-protocol -p pumpkin-tester --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked -p pumpkin-world -p pumpkin-protocol -p pumpkin-core -p pumpkin-tester --all-targets --all-features -- -D warnings
 
   gameplay:
     name: Live integration (${{ matrix.os }})

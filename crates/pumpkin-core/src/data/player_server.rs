@@ -132,28 +132,8 @@ impl ServerPlayerData {
     ///
     /// A Result indicating success or the error that occurred.
     pub fn load_data(&self, uuid: &uuid::Uuid) -> Result<Option<NbtCompound>, PlayerDataError> {
-        let result = self.storage.load_player_data(uuid);
-
-        match result {
-            Ok((should_load, data)) => {
-                if !should_load {
-                    // No data to load, continue with default data
-                    return Ok(None);
-                }
-                Ok(Some(data))
-            }
-            Err(e) => {
-                if self.storage.is_save_enabled() {
-                    // Only log as error if player data saving is enabled
-                    error!("Error loading player data for {uuid}: {e}");
-                } else {
-                    // Otherwise just log as info since it's expected
-                    debug!("Not loading player data for {uuid} (saving disabled)");
-                }
-                // Continue with default data even if there's an error
-                Ok(None)
-            }
-        }
+        let (loaded, data) = self.storage.load_player_data(uuid)?;
+        Ok(loaded.then_some(data))
     }
 
     /// Extracts and saves data from a player.
@@ -276,6 +256,23 @@ mod test {
         let (load_success, empty_nbt) = storage.load_player_data(&uuid).unwrap();
         assert!(!load_success);
         assert_eq!(empty_nbt.child_tags.len(), 0);
+    }
+
+    #[test]
+    fn server_player_data_distinguishes_missing_from_corrupt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempdir()?;
+        let data = ServerPlayerData::new(temp_dir.path(), Duration::from_secs(300), true);
+        let uuid = Uuid::new_v4();
+        assert!(data.load_data(&uuid)?.is_none());
+
+        let path = temp_dir.path().join(format!("{uuid}.dat"));
+        let original = b"invalid gzip data";
+        std::fs::write(&path, original)?;
+
+        assert!(data.load_data(&uuid).is_err());
+        assert_eq!(std::fs::read(&path)?.as_slice(), original);
+        Ok(())
     }
 
     #[tokio::test]
