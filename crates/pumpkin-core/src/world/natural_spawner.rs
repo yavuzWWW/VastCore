@@ -1121,9 +1121,7 @@ pub fn is_valid_empty_spawn_block(
     if state.is_full_cube() {
         return false;
     }
-    if !World::get_fluid_from_state_id(state.id)
-        .matches_type(&pumpkin_data::fluid::Fluid::EMPTY)
-    {
+    if !World::get_fluid_from_state_id(state.id).matches_type(&pumpkin_data::fluid::Fluid::EMPTY) {
         return false;
     }
     if Block::from_state_id(state.id).has_tag(&MINECRAFT_PREVENT_MOB_SPAWNING_INSIDE) {

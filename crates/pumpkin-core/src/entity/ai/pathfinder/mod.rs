@@ -2678,7 +2678,9 @@ mod tests {
         let folder = tempfile::tempdir()?;
         let world = world(&folder);
         let living = living(world.clone(), &EntityType::GUARDIAN);
-        living.entity.set_default_dimensions(EntityDimensions::new(1.0, 1.0, 0.5));
+        living
+            .entity
+            .set_default_dimensions(EntityDimensions::new(1.0, 1.0, 0.5));
         living.entity.set_pos(Vector3::new(1.0, 64.0, 1.0));
         living.entity.touching_water.store(true, Ordering::Relaxed);
         let target = BlockPos::new(0, 64, 0);
@@ -2738,10 +2740,10 @@ mod tests {
                 }
             }
         }
-        world.level.loaded_chunks.insert(
-            pumpkin_util::math::vector2::Vector2::new(0, 0),
-            chunk,
-        );
+        world
+            .level
+            .loaded_chunks
+            .insert(pumpkin_util::math::vector2::Vector2::new(0, 0), chunk);
 
         let start = Vector3::new(5.5, 64.0, 5.5);
         let mut positions = Vec::new();
