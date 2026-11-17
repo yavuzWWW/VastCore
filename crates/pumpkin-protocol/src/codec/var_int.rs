@@ -106,7 +106,7 @@ impl VarInt {
         &self,
         write: &mut (impl AsyncWrite + Unpin),
     ) -> Result<(), WritingError> {
-        let mut val = self.0;
+        let mut val = self.0 as u32;
         for _ in 0..Self::MAX_SIZE.get() {
             let b: u8 = val as u8 & 0b0111_1111;
             val >>= 7;
@@ -209,6 +209,23 @@ impl PacketRead for VarInt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn async_java_encoding_matches_known_bytes() -> Result<(), WritingError> {
+        let cases: [(i32, &[u8]); 4] = [
+            (0, &[0]),
+            (300, &[0xac, 0x02]),
+            (-1, &[0xff, 0xff, 0xff, 0xff, 0x0f]),
+            (i32::MIN, &[0x80, 0x80, 0x80, 0x80, 0x08]),
+        ];
+
+        for (value, expected) in cases {
+            let mut encoded = Vec::new();
+            VarInt(value).encode_async(&mut encoded).await?;
+            assert_eq!(encoded.as_slice(), expected);
+        }
+        Ok(())
+    }
 
     #[test]
     fn bedrock_zig_zag_round_trip() {
