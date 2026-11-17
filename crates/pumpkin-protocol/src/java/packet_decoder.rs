@@ -114,7 +114,7 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
 
         if let Some(threshold) = self.compression {
             let decompressed_length = VarInt::decode_async(&mut bounded_reader).await?;
-            let raw_packet_length = packet_len - decompressed_length.written_size() as u64;
+            let raw_packet_length = bounded_reader.limit();
             let decompressed_length = decompressed_length.0 as usize;
 
             if !(0..=MAX_PACKET_DATA_SIZE).contains(&decompressed_length) {
@@ -128,6 +128,11 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
                     .read_to_end(&mut self.compressed_scratch)
                     .await
                     .map_err(|err| PacketDecodeError::FailedDecompression(err.to_string()))?;
+                if bounded_reader.limit() != 0 {
+                    return Err(PacketDecodeError::MalformedLength(
+                        "Incomplete compressed frame".into(),
+                    ));
+                }
 
                 self.payload_scratch.clear();
                 self.payload_scratch.reserve(decompressed_length);
@@ -179,9 +184,7 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
                 .await
                 .map_err(|_| PacketDecodeError::DecodeID)?
                 .0;
-            let packet_id_len = VarInt(packet_id).written_size();
-
-            let payload_len_hint = (raw_packet_length as usize).saturating_sub(packet_id_len);
+            let payload_len_hint = bounded_reader.limit() as usize;
             self.payload_scratch.clear();
             self.payload_scratch.reserve(payload_len_hint);
 
@@ -195,6 +198,12 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
                     break;
                 }
                 total_read += bytes_read;
+            }
+
+            if bounded_reader.limit() != 0 {
+                return Err(PacketDecodeError::MalformedLength(
+                    "Incomplete packet frame".into(),
+                ));
             }
 
             let payload = self
@@ -212,9 +221,7 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
             .await
             .map_err(|_| PacketDecodeError::DecodeID)?
             .0;
-        let packet_id_len = VarInt(packet_id).written_size();
-
-        let payload_len_hint = (packet_len as usize).saturating_sub(packet_id_len);
+        let payload_len_hint = bounded_reader.limit() as usize;
         self.payload_scratch.clear();
         self.payload_scratch.reserve(payload_len_hint);
 
@@ -228,6 +235,12 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
                 break;
             }
             total_read += bytes_read;
+        }
+
+        if bounded_reader.limit() != 0 {
+            return Err(PacketDecodeError::MalformedLength(
+                "Incomplete packet frame".into(),
+            ));
         }
 
         let payload = self
@@ -320,6 +333,34 @@ mod tests {
             encrypt_aes128(&mut packet, k, v)?;
         }
         Ok(packet)
+    }
+
+    #[tokio::test]
+    async fn rejects_incomplete_frames() {
+        let mut decoder = TCPNetworkDecoder::new(&[4_u8, 1, 42][..]);
+        assert!(matches!(
+            decoder.get_raw_packet().await,
+            Err(PacketDecodeError::MalformedLength(_))
+        ));
+
+        let mut decoder = TCPNetworkDecoder::new(&[5_u8, 0, 1, 42][..]);
+        decoder.set_compression(256);
+        assert!(matches!(
+            decoder.get_raw_packet().await,
+            Err(PacketDecodeError::MalformedLength(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn decodes_adjacent_frames_with_empty_payload() -> Result<(), PacketDecodeError> {
+        let mut decoder = TCPNetworkDecoder::new(&[1_u8, 1, 2, 2, 42][..]);
+        let first = decoder.get_raw_packet().await?;
+        assert_eq!(first.id, 1);
+        assert!(first.payload.is_empty());
+        let second = decoder.get_raw_packet().await?;
+        assert_eq!(second.id, 2);
+        assert_eq!(second.payload.as_ref(), &[42]);
+        Ok(())
     }
 
     /// Test decoding without compression and encryption
