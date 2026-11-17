@@ -16,7 +16,6 @@ impl JavaClient {
         }
         player.update_last_action_time();
 
-        let entity = &player.get_entity();
         match command.action {
             Action::StartSprinting => player.apply_sprint_input(server, true),
             Action::StopSprinting => player.apply_sprint_input(server, false),
@@ -30,7 +29,7 @@ impl JavaClient {
             }
             Action::StartFlyingElytra => {
                 if !player.try_to_start_fall_flying(server) {
-                    entity.stop_fall_flying();
+                    player.end_fall_flying();
                 }
             }
             // <= 1.21.5

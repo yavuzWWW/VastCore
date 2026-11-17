@@ -76,7 +76,7 @@ impl ItemBehaviour for FireworkRocketItem {
         _pitch: f32,
         hand: pumpkin_util::Hand,
     ) {
-        if player.get_entity().is_fall_flying() {
+        if player.get_entity().is_fall_flying() && player.can_glide() {
             let mut held = match hand {
                 pumpkin_util::Hand::Right => player.inventory().held_item(),
                 pumpkin_util::Hand::Left => player.inventory().off_hand_item(),

@@ -3654,9 +3654,18 @@ impl Player {
     /// Vanilla `Player.canGlide`
     pub fn can_glide(&self) -> bool {
         let entity = &self.living_entity.entity;
-        !self.is_flying()
+        let flying = self
+            .abilities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .flying;
+        !flying
+            && !self.is_spectator()
+            && !self.is_sleeping()
+            && self.living_entity.is_alive()
             && !entity.on_ground.load(Ordering::Relaxed)
             && !entity.has_vehicle()
+            && !entity.is_in_liquid()
             && !self.living_entity.has_effect(&StatusEffect::LEVITATION)
             && !self.glider_slots().is_empty()
     }
@@ -3664,8 +3673,12 @@ impl Player {
     /// Vanilla `tryToStartFallFlying`, for the glide request of both editions
     pub fn try_to_start_fall_flying(&self, server: &Arc<Server>) -> bool {
         let entity = &self.living_entity.entity;
-        if entity.is_fall_flying() || !self.can_glide() || entity.is_in_liquid() {
+        if !self.can_glide() {
             return false;
+        }
+        // A repeated start request must not cancel an already valid glide.
+        if entity.is_fall_flying() {
+            return true;
         }
         let mut event =
             crate::plugin::api::events::entity::entity_toggle_glide::EntityToggleGlideEvent::new(
@@ -3673,10 +3686,12 @@ impl Player {
                 true,
             );
         server.plugin_manager.fire_blocking(server, &mut event);
-        if event.cancelled || !event.is_gliding {
+        if event.cancelled || !event.is_gliding || !self.can_glide() {
             return false;
         }
         entity.set_fall_flying(true);
+        self.update_player_pose();
+        entity.send_dirty_entity_data();
         true
     }
 
@@ -3694,6 +3709,29 @@ impl Player {
         !event.cancelled && !event.is_gliding
     }
 
+    /// Correct both the authoritative flag and the client's predicted pose immediately.
+    pub fn end_fall_flying(&self) {
+        let entity = self.get_entity();
+        entity.stop_fall_flying();
+        self.fall_fly_ticks.store(0, Ordering::Relaxed);
+        self.update_player_pose();
+        entity.send_dirty_entity_data();
+    }
+
+    /// Reconcile after movement as well as each tick, including when equipment changes.
+    fn reconcile_fall_flying(&self) -> bool {
+        if !self.get_entity().is_fall_flying() {
+            return false;
+        }
+        if !self.can_glide() {
+            if self.glide_stop_allowed() {
+                self.end_fall_flying();
+            }
+            return false;
+        }
+        true
+    }
+
     /// Vanilla `updateFallFlying`: ends the glide once it isn't possible, wears the glider every second
     fn tick_fall_flying(&self) {
         let entity = &self.living_entity.entity;
@@ -3701,16 +3739,12 @@ impl Player {
             self.fall_fly_ticks.store(0, Ordering::Relaxed);
             return;
         }
-        // Vanilla `checkFallDistanceAccumulation`: only a steep dive builds it up. In the tick,
-        // so a landing move has already taken its damage.
+        // Vanilla `checkFallDistanceAccumulation`: only a steep dive builds it up.
+        // Also checked before landing damage in do_check_fall_damage.
         if entity.movement.load().y > -0.5 && self.living_entity.fall_distance.load() > 1.0 {
             self.living_entity.fall_distance.store(1.0);
         }
-        if !self.can_glide() {
-            if self.glide_stop_allowed() {
-                entity.set_fall_flying(false);
-                self.fall_fly_ticks.store(0, Ordering::Relaxed);
-            }
+        if !self.reconcile_fall_flying() {
             return;
         }
         let ticks = self.fall_fly_ticks.fetch_add(1, Ordering::Relaxed) + 1;
@@ -3757,6 +3791,12 @@ impl Player {
             || self.living_entity.dead.load(Ordering::Relaxed)
         {
             return;
+        }
+        // Player movement is client-driven; the last move may already be a landing.
+        // Cap a shallow glide before fall() consumes the accumulated distance.
+        if self.get_entity().is_fall_flying() && movement.y > -0.5 {
+            let distance = self.living_entity.fall_distance.load();
+            self.living_entity.fall_distance.store(distance.min(1.0));
         }
         let fall_distance = self.living_entity.fall_distance.load();
         if self.spawn_extra_particles_on_fall.load(Ordering::Relaxed)
@@ -5526,6 +5566,9 @@ impl Player {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .flying = flying;
+        if flying && self.get_entity().is_fall_flying() {
+            self.end_fall_flying();
+        }
         self.send_abilities_update();
     }
 
@@ -5842,7 +5885,7 @@ impl Player {
             self.release_shoulders();
             let entity = self.get_entity();
             if entity.is_fall_flying() {
-                entity.set_fall_flying(false);
+                self.end_fall_flying();
             }
             if entity.is_sneaking() {
                 entity.set_sneaking(false);

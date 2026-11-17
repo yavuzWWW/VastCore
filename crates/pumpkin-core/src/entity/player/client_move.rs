@@ -135,11 +135,7 @@ impl Player {
             server;
             PlayerToggleFlightEvent::new(player, new_flying);
             'after: {
-                if event.is_flying {
-                    self.living_entity.fall_distance.store(0.0);
-                }
-                self.abilities.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flying = event.is_flying;
-                self.send_abilities_update();
+                self.set_flying(event.is_flying);
             }
             'cancelled: {
                 self.send_abilities_update();
@@ -294,9 +290,6 @@ impl Player {
         entity
             .horizontal_collision
             .store(requested.horizontal_collision, Ordering::Relaxed);
-        if requested.on_ground && entity.is_fall_flying() && self.glide_stop_allowed() {
-            entity.set_fall_flying(false);
-        }
 
         let pos_changed = delta.length_squared() > 0.0;
         let rot_changed = self.look_changed(requested);
@@ -313,6 +306,7 @@ impl Player {
         }
 
         self.do_check_fall_damage(delta, requested.on_ground, requested.horizontal_collision);
+        self.reconcile_fall_flying();
         if delta.y > 0.0 {
             self.living_entity.fall_distance.store(0.0);
         }

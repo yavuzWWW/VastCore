@@ -150,7 +150,7 @@ impl BedrockClient {
             if was_flying {
                 set_flying(true);
             }
-            player.get_entity().stop_fall_flying();
+            player.end_fall_flying();
         }
         if was_flying {
             player.send_abilities_update();
@@ -165,7 +165,11 @@ impl BedrockClient {
             return;
         }
         let stop = (on_ground || !player.can_glide()) && player.glide_stop_allowed();
-        entity.set_fall_flying(!stop);
+        if stop {
+            player.end_fall_flying();
+        } else {
+            entity.set_fall_flying(true);
+        }
     }
 
     /// Client state at this input, which push motions build on.

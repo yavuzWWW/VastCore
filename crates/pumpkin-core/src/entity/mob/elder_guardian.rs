@@ -100,7 +100,8 @@ impl Mob for ElderGuardianEntity {
     }
 
     fn on_damage(&self, damage_type: DamageType, source: Option<&dyn EntityBase>) {
-        if damage_type != DamageType::THORNS && !self.moving.load(Ordering::Relaxed)
+        if damage_type != DamageType::THORNS
+            && !self.moving.load(Ordering::Relaxed)
             && let Some(src) = source
             && let Some(living) = src.get_living_entity()
         {

@@ -306,12 +306,7 @@ impl Mob for AxolotlEntity {
         if entity.is_in_water_or_rain() {
             entity.set_air_supply(MAX_AIR_SUPPLY);
         } else {
-            entity.set_air_supply(
-                entity
-                    .air_supply
-                    .load(Ordering::Relaxed)
-                    .saturating_sub(1),
-            );
+            entity.set_air_supply(entity.air_supply.load(Ordering::Relaxed).saturating_sub(1));
             if living.should_take_drowning_damage() {
                 entity.set_air_supply(0);
                 self.damage(self, 2.0, DamageType::DRY_OUT);
@@ -424,7 +419,10 @@ mod tests {
         entity.touching_water.store(false, Ordering::Relaxed);
         assert_eq!(entity.air_supply.load(Ordering::Relaxed), MAX_AIR_SUPPLY);
         axolotl.base_tick();
-        assert_eq!(entity.air_supply.load(Ordering::Relaxed), MAX_AIR_SUPPLY - 1);
+        assert_eq!(
+            entity.air_supply.load(Ordering::Relaxed),
+            MAX_AIR_SUPPLY - 1
+        );
         entity.touching_water.store(true, Ordering::Relaxed);
         axolotl.base_tick();
         assert_eq!(entity.air_supply.load(Ordering::Relaxed), MAX_AIR_SUPPLY);
