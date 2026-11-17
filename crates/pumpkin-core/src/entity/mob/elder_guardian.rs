@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use pumpkin_data::damage::DamageType;
@@ -8,11 +8,11 @@ use pumpkin_data::potion::Effect;
 use pumpkin_protocol::java::client::play::{CGameEvent, GameEvent};
 
 use crate::entity::ai::behavior::hunting;
-use crate::entity::mob::guardian::GUARDIAN_HUNTS;
+use crate::entity::mob::guardian::{GUARDIAN_HUNTS, initialize_swimming, travel_in_water};
 use crate::entity::{
     Entity, EntityBase,
     ai::goal::{
-        look_around::RandomLookAroundGoal, look_at_entity::LookAtEntityGoal, swim::SwimGoal,
+        look_around::RandomLookAroundGoal, look_at_entity::LookAtEntityGoal,
         wander_around::WanderAroundGoal,
     },
     mob::{Mob, MobEntity},
@@ -22,12 +22,15 @@ const EFFECT_INTERVAL: i32 = 1200;
 
 pub struct ElderGuardianEntity {
     pub mob_entity: MobEntity,
+    moving: Arc<AtomicBool>,
 }
 
 impl ElderGuardianEntity {
     pub fn new(entity: Entity) -> Arc<Self> {
-        let mob_entity = MobEntity::new(entity);
-        let guardian = Self { mob_entity };
+        let mut mob_entity = MobEntity::new(entity);
+        let moving = initialize_swimming(&mut mob_entity);
+        mob_entity.set_persistence_required();
+        let guardian = Self { mob_entity, moving };
         let mob_arc = Arc::new(guardian);
         let mob_weak: Weak<dyn Mob> = {
             let mob_arc: Arc<dyn Mob> = mob_arc.clone();
@@ -37,8 +40,7 @@ impl ElderGuardianEntity {
         {
             let goal_selector = &mob_arc.mob_entity.goals_selector;
 
-            goal_selector.add_goal(0, Box::new(SwimGoal::default()));
-            goal_selector.add_goal(4, Box::new(WanderAroundGoal::new(1.0)));
+            goal_selector.add_goal(7, Box::new(WanderAroundGoal::with_interval(1.0, 400)));
             goal_selector.add_goal(
                 5,
                 LookAtEntityGoal::with_default(mob_weak.clone(), &EntityType::PLAYER, 8.0),
@@ -85,8 +87,17 @@ impl Mob for ElderGuardianEntity {
         }
     }
 
+    fn check_spawn_obstruction(&self, world: &crate::world::World) -> bool {
+        world.is_unobstructed(self.get_entity())
+    }
+
+    fn travel_in_water(&self, caller: &dyn EntityBase, _gravity: f64, _falling: bool) {
+        travel_in_water(&self.mob_entity, caller, self.moving.load(Ordering::Relaxed));
+    }
+
     fn on_damage(&self, _damage_type: DamageType, source: Option<&dyn EntityBase>) {
-        if let Some(src) = source
+        if !self.moving.load(Ordering::Relaxed)
+            && let Some(src) = source
             && let Some(living) = src.get_living_entity()
         {
             let _ = living.damage(src, 2.0, DamageType::THORNS);

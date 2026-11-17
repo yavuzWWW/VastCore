@@ -2736,7 +2736,12 @@ mod tests {
         for x in 2..=12 {
             for z in 2..=12 {
                 for y in 58..=72 {
-                    chunk.set_block_absolute_y(x, y, z, pumpkin_data::Block::WATER.default_state.id);
+                    chunk.set_block_absolute_y(
+                        x,
+                        y,
+                        z,
+                        pumpkin_data::Block::WATER.default_state.id,
+                    );
                 }
             }
         }
