@@ -1044,8 +1044,10 @@ pub fn is_spawn_position_ok(
             if !within_bounds {
                 return false;
             }
-            let above_state = world.get_block_state(&block_pos.up());
-            world.get_fluid(block_pos).has_tag(&MINECRAFT_WATER) && !above_state.is_solid_block()
+            is_water_spawn_position(
+                world.get_block_state(block_pos),
+                world.get_block_state(&block_pos.up()),
+            )
         }
         SpawnLocation::OnGround => {
             if !within_bounds {
@@ -1084,9 +1086,7 @@ pub fn is_spawn_position_ok_cache(
             let above_pos = block_pos.up().0;
             let above_state = GenerationCache::get_block_state(cache, &above_pos).to_state();
 
-            state.is_liquid()
-                && Block::from_state_id(state.id).has_tag(&MINECRAFT_WATER)
-                && !above_state.is_solid_block()
+            is_water_spawn_position(state, above_state)
         }
         SpawnLocation::OnGround => {
             let down_pos = block_pos.down().0;
@@ -1108,6 +1108,11 @@ pub fn is_spawn_position_ok_cache(
     }
 }
 
+fn is_water_spawn_position(state: &BlockState, above_state: &BlockState) -> bool {
+    World::get_fluid_from_state_id(state.id).has_tag(&MINECRAFT_WATER)
+        && !above_state.is_solid_block()
+}
+
 #[must_use]
 pub fn is_valid_empty_spawn_block(
     state: &'static BlockState,
@@ -1116,7 +1121,9 @@ pub fn is_valid_empty_spawn_block(
     if state.is_full_cube() {
         return false;
     }
-    if state.is_liquid() {
+    if !World::get_fluid_from_state_id(state.id)
+        .matches_type(&pumpkin_data::fluid::Fluid::EMPTY)
+    {
         return false;
     }
     if Block::from_state_id(state.id).has_tag(&MINECRAFT_PREVENT_MOB_SPAWNING_INSIDE) {
@@ -1216,6 +1223,67 @@ mod tests {
 
             assert_eq!(change, 1.0 / distance, "wrong potential for {far:?}");
         }
+    }
+
+    #[test]
+    fn ground_spawn_rejects_water_containing_blocks() {
+        for block in [
+            &Block::WATER,
+            &Block::SEAGRASS,
+            &Block::TALL_SEAGRASS,
+            &Block::KELP,
+            &Block::KELP_PLANT,
+            &Block::BUBBLE_COLUMN,
+        ] {
+            assert!(
+                !is_valid_empty_spawn_block(block.default_state, &EntityType::ZOMBIE),
+                "{} allowed as a dry spawn block",
+                block.name
+            );
+        }
+        assert!(is_valid_empty_spawn_block(
+            Block::AIR.default_state,
+            &EntityType::ZOMBIE
+        ));
+    }
+
+    #[tokio::test]
+    async fn surface_fish_spawn_rules_require_water_below_and_above()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::entity::{ai::test_support::world, mob::MobEntity};
+
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let y = world.sea_level - 5;
+        let pos = BlockPos::new(5, y, 5);
+        let chunk = ChunkData::empty_sync(0, 0);
+        world
+            .level
+            .loaded_chunks
+            .insert(Vector2::new(0, 0), chunk.clone());
+
+        for block_y in (y - 1)..=(y + 1) {
+            chunk.set_block_absolute_y(5, block_y, 5, Block::WATER.default_state.id);
+        }
+        let valid = is_spawn_position_ok(&world, &pos, &EntityType::COD)
+            && MobEntity::check_surface_water_animal_spawn_rules(&world, &pos);
+        chunk.set_block_absolute_y(5, y - 1, 5, Block::STONE.default_state.id);
+        let missing_water_below = MobEntity::check_surface_water_animal_spawn_rules(&world, &pos);
+        chunk.set_block_absolute_y(5, y - 1, 5, Block::WATER.default_state.id);
+        chunk.set_block_absolute_y(5, y + 1, 5, Block::AIR.default_state.id);
+        let missing_water_above = MobEntity::check_surface_water_animal_spawn_rules(&world, &pos);
+        chunk.set_block_absolute_y(5, y, 5, Block::SEAGRASS.default_state.id);
+        let plant_water = is_spawn_position_ok(&world, &pos, &EntityType::COD);
+        chunk.set_block_absolute_y(5, y + 1, 5, Block::STONE.default_state.id);
+        let blocked = is_spawn_position_ok(&world, &pos, &EntityType::COD);
+        world.level.shutdown().await;
+
+        assert!(valid, "submerged fish spawn was rejected");
+        assert!(!missing_water_below);
+        assert!(!missing_water_above);
+        assert!(plant_water, "water-containing plants failed placement");
+        assert!(!blocked, "solid block above allowed water placement");
+        Ok(())
     }
 
     #[test]

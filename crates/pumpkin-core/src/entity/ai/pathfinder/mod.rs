@@ -1804,14 +1804,14 @@ impl PathNavigationTrait for WaterBoundPathNavigation {
         let width = entity.entity.width();
         self.inner.max_distance_to_waypoint = PathNavigation::waypoint_margin(width);
         if let Some(path) = &mut self.inner.path
-            && let Some(pos) = path.get_next_node_pos()
+            && let Some(waypoint) = path.get_next_entity_pos(width)
         {
             let reached = if can_update {
                 let margin = f64::from(self.inner.max_distance_to_waypoint);
-                ((current_pos.x - (f64::from(pos.0.x) + 0.5)).abs() < margin
-                    && (current_pos.z - (f64::from(pos.0.z) + 0.5)).abs() < margin
-                    && (current_pos.y - f64::from(pos.0.y)).abs()
-                        < Self::MAX_VERTICAL_DISTANCE_TO_WAYPOINT)
+                // Match the steering position, including the width-dependent offset.
+                ((current_pos.x - waypoint.x).abs() < margin
+                    && (current_pos.z - waypoint.z).abs() < margin
+                    && (current_pos.y - waypoint.y).abs() < Self::MAX_VERTICAL_DISTANCE_TO_WAYPOINT)
                     || (path
                         .get_next_node()
                         .is_some_and(|node| PathNavigation::can_cut_corner(node.path_type))
@@ -2670,6 +2670,57 @@ mod tests {
         world.level.shutdown().await;
         assert!(steering_target.is_none());
         assert!(navigation.is_done());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wide_swimmer_finishes_at_its_steering_position() -> TestResult {
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let living = living(world.clone(), &EntityType::GUARDIAN);
+        living.entity.set_default_dimensions(EntityDimensions::new(1.0, 1.0, 0.5));
+        living.entity.set_pos(Vector3::new(1.0, 64.0, 1.0));
+        living.entity.touching_water.store(true, Ordering::Relaxed);
+        let target = BlockPos::new(0, 64, 0);
+        let path = Path::new(vec![Node::new(target)], target, true);
+        let mut navigation = WaterBoundPathNavigation::new(false);
+        navigation.move_to_path(Some(path), 1.0, &living);
+        let steering_target = navigation.tick(&living);
+        world.level.shutdown().await;
+
+        assert!(steering_target.is_none());
+        assert!(navigation.is_done());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fish_paths_can_climb_and_descend_an_underwater_shaft() -> TestResult {
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let chunk = pumpkin_world::chunk::ChunkData::empty_sync(0, 0);
+        for y in 60..=68 {
+            chunk.set_block_absolute_y(5, y, 5, pumpkin_data::Block::WATER.default_state.id);
+        }
+        world.level.loaded_chunks.insert(
+            pumpkin_util::math::vector2::Vector2::new(0, 0),
+            chunk.clone(),
+        );
+        let living = LivingEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(5.5, 64.0, 5.5),
+            &EntityType::COD,
+        ));
+        living.entity.touching_water.store(true, Ordering::Relaxed);
+        let mut navigation = WaterBoundPathNavigation::new(false);
+        let upward = navigation.create_path(&living, Vector3::new(5.5, 68.0, 5.5), 0);
+        let downward = navigation.create_path(&living, Vector3::new(5.5, 60.0, 5.5), 0);
+        chunk.set_block_absolute_y(5, 66, 5, pumpkin_data::Block::STONE.default_state.id);
+        let blocked = navigation.create_path(&living, Vector3::new(5.5, 68.0, 5.5), 0);
+        world.level.shutdown().await;
+
+        assert!(upward.is_some_and(|path| path.can_reach()));
+        assert!(downward.is_some_and(|path| path.can_reach()));
+        assert!(!blocked.is_some_and(|path| path.can_reach()));
         Ok(())
     }
 
