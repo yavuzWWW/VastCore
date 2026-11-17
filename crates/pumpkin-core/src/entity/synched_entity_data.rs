@@ -145,32 +145,55 @@ impl SynchedEntityData {
         self.is_dirty.load(Ordering::Acquire)
     }
 
-    /// Serializes the values that changed since the last [`Self::clear_dirty`], or
-    /// `None` when nothing changed.
+    /// Serializes the values that changed since the last drain, without clearing them.
     pub fn pack_dirty_for_version(&self, version: &JavaMinecraftVersion) -> Option<Box<[u8]>> {
+        self.serialize_dirty(version, false)
+    }
+
+    /// Atomically serializes and clears pending changes. A concurrent setter after the
+    /// snapshot remains dirty for the next send, rather than being cleared by the old send.
+    pub fn take_dirty_for_version(&self, version: &JavaMinecraftVersion) -> Option<Box<[u8]>> {
+        self.serialize_dirty(version, true)
+    }
+
+    fn serialize_dirty(
+        &self,
+        version: &JavaMinecraftVersion,
+        consume: bool,
+    ) -> Option<Box<[u8]>> {
         if !self.is_dirty.load(Ordering::Acquire) {
             return None;
         }
 
-        let items = self
+        let mut items = self
             .items
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut buf = Vec::new();
         let mut has_any = false;
 
-        for item in items.values() {
+        for item in items.values_mut() {
             if item.dirty {
                 let before_len = buf.len();
                 if item
                     .serializer
                     .write(item.tracked.id, item.tracked.r#type, &mut buf, version)
                     .is_ok()
-                    && buf.len() > before_len
                 {
-                    has_any = true;
+                    has_any |= buf.len() > before_len;
+                    if consume {
+                        item.dirty = false;
+                    }
+                } else {
+                    // A failed serializer may have written a partial metadata entry.
+                    buf.truncate(before_len);
                 }
             }
+        }
+
+        if consume {
+            self.is_dirty
+                .store(items.values().any(|item| item.dirty), Ordering::Release);
         }
 
         if !has_any {
@@ -252,6 +275,28 @@ mod test {
             data.pack_dirty_for_version(&JavaMinecraftVersion::V_1_20_5),
             current
         );
+    }
+
+    #[test]
+    fn a_later_update_survives_the_previous_dirty_snapshot() {
+        use pumpkin_data::tracked_data::entity::DATA_SHARED_FLAGS_ID;
+
+        let data = SynchedEntityData::new();
+        let version = JavaMinecraftVersion::V_26_3;
+        data.define(DATA_SHARED_FLAGS_ID, 0i8);
+        assert!(data.set(DATA_SHARED_FLAGS_ID, i8::MIN));
+        let start = data.take_dirty_for_version(&version);
+        assert!(start.is_some());
+        assert!(!data.is_dirty());
+
+        // Simulate clearing gliding while the previous packet is in flight.
+        assert!(data.set(DATA_SHARED_FLAGS_ID, 0i8));
+        assert!(data.is_dirty());
+        let stop = data.take_dirty_for_version(&version);
+        assert!(stop.is_some());
+        assert_ne!(start, stop);
+        assert!(!data.is_dirty());
+        assert!(data.take_dirty_for_version(&version).is_none());
     }
 
     /// A value still at the default the client assumes is not sent.

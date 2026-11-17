@@ -4477,11 +4477,10 @@ impl Entity {
         }
 
         let version = CURRENT_MC_VERSION;
-        if let Some(buf) = self.synched_data.pack_dirty_for_version(&version) {
+        if let Some(buf) = self.synched_data.take_dirty_for_version(&version) {
             let packet = CSetEntityMetadata::new(self.entity_id.into(), buf);
             self.send_java_metadata_packet(&world, &packet);
         }
-        self.synched_data.clear_dirty();
     }
 
     /// Resends every non-default synced value of this entity to its viewers, the entity
@@ -4501,7 +4500,8 @@ impl Entity {
             let packet = CSetEntityMetadata::new(self.entity_id.into(), buf);
             self.send_java_metadata_packet(&world, &packet);
         }
-        self.synched_data.clear_dirty();
+        // Leave pending changes for the regular dirty drain. An update concurrent
+        // with this refresh must still be delivered to existing viewers.
     }
 
     pub fn set_pose(&self, pose: EntityPose) {
