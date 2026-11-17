@@ -92,11 +92,15 @@ impl Mob for ElderGuardianEntity {
     }
 
     fn travel_in_water(&self, caller: &dyn EntityBase, _gravity: f64, _falling: bool) {
-        travel_in_water(&self.mob_entity, caller, self.moving.load(Ordering::Relaxed));
+        travel_in_water(
+            &self.mob_entity,
+            caller,
+            self.moving.load(Ordering::Relaxed),
+        );
     }
 
-    fn on_damage(&self, _damage_type: DamageType, source: Option<&dyn EntityBase>) {
-        if !self.moving.load(Ordering::Relaxed)
+    fn on_damage(&self, damage_type: DamageType, source: Option<&dyn EntityBase>) {
+        if damage_type != DamageType::THORNS && !self.moving.load(Ordering::Relaxed)
             && let Some(src) = source
             && let Some(living) = src.get_living_entity()
         {

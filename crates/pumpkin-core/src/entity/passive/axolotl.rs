@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI32, Ordering},
 };
 
+use pumpkin_data::damage::DamageType;
 use pumpkin_data::data_component_impl::{AxolotlVariantImpl, BucketEntityDataImpl};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
@@ -29,6 +30,8 @@ use crate::entity::{
     passive::animal::Animal,
     player::Player,
 };
+
+const MAX_AIR_SUPPLY: i32 = 6000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
@@ -85,6 +88,7 @@ pub struct AxolotlEntity {
 
 impl AxolotlEntity {
     pub fn new(entity: Entity) -> Arc<Self> {
+        entity.air_supply.store(MAX_AIR_SUPPLY, Ordering::Relaxed);
         let mob_entity = MobEntity::new(entity);
         let variant = AxolotlVariant::random_variant();
         let axolotl = Self {
@@ -285,6 +289,36 @@ impl Mob for AxolotlEntity {
         self.is_from_bucket()
     }
 
+    fn mob_max_air_supply(&self) -> i32 {
+        MAX_AIR_SUPPLY
+    }
+
+    fn base_tick(&self) {
+        let living = &self.mob_entity.living_entity;
+        if self.mob_entity.is_no_ai() {
+            living.tick_air_supply(self);
+            return;
+        }
+        if !living.is_alive() {
+            return;
+        }
+        let entity = &living.entity;
+        if entity.is_in_water_or_rain() {
+            entity.set_air_supply(MAX_AIR_SUPPLY);
+        } else {
+            entity.set_air_supply(
+                entity
+                    .air_supply
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(1),
+            );
+            if living.should_take_drowning_damage() {
+                entity.set_air_supply(0);
+                self.damage(self, 2.0, DamageType::DRY_OUT);
+            }
+        }
+    }
+
     fn custom_server_ai_step(&self, _caller: &dyn EntityBase) {
         let play_dead_ticks = self.play_dead_ticks.load(Ordering::Relaxed);
         if play_dead_ticks > 0 {
@@ -375,6 +409,28 @@ mod tests {
     use super::*;
     use crate::entity::ai::test_support::world;
     use pumpkin_util::math::vector3::Vector3;
+
+    #[tokio::test]
+    async fn axolotl_rehydrates_in_water_and_loses_air_on_land()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let axolotl = AxolotlEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(5.5, 64.0, 5.5),
+            &EntityType::AXOLOTL,
+        ));
+        let entity = axolotl.get_entity();
+        entity.touching_water.store(false, Ordering::Relaxed);
+        assert_eq!(entity.air_supply.load(Ordering::Relaxed), MAX_AIR_SUPPLY);
+        axolotl.base_tick();
+        assert_eq!(entity.air_supply.load(Ordering::Relaxed), MAX_AIR_SUPPLY - 1);
+        entity.touching_water.store(true, Ordering::Relaxed);
+        axolotl.base_tick();
+        assert_eq!(entity.air_supply.load(Ordering::Relaxed), MAX_AIR_SUPPLY);
+        world.level.shutdown().await;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn axolotl_bucket_preserves_variant_health_and_age()

@@ -3,8 +3,8 @@ use std::sync::{Arc, Weak};
 
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::entity::EntityType;
-use pumpkin_util::math::vector3::Vector3;
 use pumpkin_data::{damage::DamageType, sound::Sound};
+use pumpkin_util::math::vector3::Vector3;
 
 use crate::entity::ai::behavior::hunting::{self, Hunt};
 use crate::entity::ai::control::{
@@ -108,8 +108,8 @@ impl MoveControlTrait for GuardianMoveControl {
         let speed = (target_speed - living.get_speed()).mul_add(0.125, living.get_speed());
         mob_entity.set_speed(speed);
 
-        let phase = f64::from(entity.tick_count.load(Ordering::Relaxed))
-            + f64::from(entity.entity_id);
+        let phase =
+            f64::from(entity.tick_count.load(Ordering::Relaxed)) + f64::from(entity.entity_id);
         let horizontal = (phase * 0.5).sin() * 0.05;
         let vertical = (phase * 0.75).sin() * 0.05;
         let (sin, cos) = f64::from(yaw).to_radians().sin_cos();
@@ -216,11 +216,15 @@ impl Mob for GuardianEntity {
     }
 
     fn travel_in_water(&self, caller: &dyn EntityBase, _gravity: f64, _falling: bool) {
-        travel_in_water(&self.mob_entity, caller, self.moving.load(Ordering::Relaxed));
+        travel_in_water(
+            &self.mob_entity,
+            caller,
+            self.moving.load(Ordering::Relaxed),
+        );
     }
 
-    fn on_damage(&self, _damage_type: DamageType, source: Option<&dyn EntityBase>) {
-        if !self.moving.load(Ordering::Relaxed)
+    fn on_damage(&self, damage_type: DamageType, source: Option<&dyn EntityBase>) {
+        if damage_type != DamageType::THORNS && !self.moving.load(Ordering::Relaxed)
             && let Some(src) = source
             && let Some(living) = src.get_living_entity()
         {
@@ -284,13 +288,16 @@ mod tests {
             ));
             drop(navigator);
 
-            let mut control = body
-                .move_control
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            control.set_wanted_position(5.0, 67.0, 7.0, 1.0);
-            for _ in 0..20 {
-                control.tick(mob);
+            for tick in 0..20 {
+                living.entity.tick_count.store(tick, Ordering::Relaxed);
+                {
+                    let mut control = body
+                        .move_control
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    control.set_wanted_position(5.0, 67.0, 7.0, 1.0);
+                    control.tick(mob);
+                }
                 mob.travel_in_water(entity.as_ref(), 0.08, false);
             }
             let pos = living.entity.pos.load();
