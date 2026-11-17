@@ -2725,6 +2725,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cod_moves_toward_higher_and_lower_underwater_targets() -> TestResult {
+        use crate::entity::passive::{abstract_fish::AbstractFish, cod::CodEntity};
+
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let chunk = pumpkin_world::chunk::ChunkData::empty_sync(0, 0);
+        for x in 2..=12 {
+            for z in 2..=12 {
+                for y in 58..=72 {
+                    chunk.set_block_absolute_y(x, y, z, pumpkin_data::Block::WATER.default_state.id);
+                }
+            }
+        }
+        world.level.loaded_chunks.insert(
+            pumpkin_util::math::vector2::Vector2::new(0, 0),
+            chunk,
+        );
+
+        let start = Vector3::new(5.5, 64.0, 5.5);
+        let mut positions = Vec::new();
+        for y in [67, 61] {
+            let cod = CodEntity::new(Entity::new(world.clone(), start, &EntityType::COD));
+            let living = &cod.mob_entity.living_entity;
+            living.entity.touching_water.store(true, Ordering::Relaxed);
+            let target = BlockPos::new(5, y, 8);
+            let path = Path::new(vec![Node::new(target)], target, true);
+            cod.mob_entity
+                .navigator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .move_to_path(Some(path), 1.0, living);
+
+            for _ in 0..20 {
+                let next = cod
+                    .mob_entity
+                    .navigator
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .tick(living);
+                {
+                    let mut control = cod
+                        .mob_entity
+                        .move_control
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(next) = next {
+                        control.set_wanted_position(
+                            next.position.x,
+                            next.position.y,
+                            next.position.z,
+                            next.speed_modifier,
+                        );
+                    }
+                    control.tick(cod.as_ref());
+                }
+                cod.fish_travel_in_water(cod.as_ref());
+            }
+            positions.push(living.entity.pos.load());
+        }
+        world.level.shutdown().await;
+
+        assert!(positions.iter().all(|pos| {
+            pos.x.is_finite() && pos.y.is_finite() && pos.z.is_finite() && pos.z > start.z + 0.05
+        }));
+        assert!(positions[0].y > start.y + 0.05);
+        assert!(positions[1].y < start.y - 0.05);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn fish_paths_cross_water_plants() -> TestResult {
         let folder = tempfile::tempdir()?;
         let world = world(&folder);
