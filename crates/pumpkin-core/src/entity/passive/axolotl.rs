@@ -455,7 +455,7 @@ mod tests {
             .get_data_component::<BucketEntityDataImpl>()
             .and_then(|data| data.nbt.as_ref())
             .ok_or("missing bucket NBT")?;
-        assert_eq!(variant.value.as_str(), "blue");
+        assert_eq!(&*variant.value, "blue");
 
         let released = AxolotlEntity::new(Entity::new(
             world.clone(),

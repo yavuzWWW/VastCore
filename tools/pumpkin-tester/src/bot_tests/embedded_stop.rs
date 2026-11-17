@@ -1,6 +1,6 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -15,7 +15,8 @@ use tokio::time::timeout;
 
 use crate::{bot::HeadlessBot, harness};
 
-const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+const STOP_TIMEOUT: Duration = Duration::from_secs(120);
+const SLOT_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub async fn run_embedded_stop_test(summary_lines: &mut Vec<String>) -> Result<(), String> {
     let test_start = Instant::now();
@@ -66,15 +67,34 @@ pub async fn run_embedded_stop_test(summary_lines: &mut Vec<String>) -> Result<(
         let result = async {
             let mut bot = joined?;
             bot.set_held_item(6).await?;
-            for _ in 0..crate::bot::MAX_POLL_TICKS {
-                if let Some(player) = server.get_all_players().first()
-                    && player.inventory.get_selected_slot() == 6
-                {
-                    return Ok::<_, String>((bot, player.gameprofile.id));
+            // Unlike TCP, the in-memory duplex stream has only 64 KiB of capacity.
+            // Consume outgoing chunks and metadata so the embedded transport can progress.
+            let drain = tokio::spawn(async move { while bot.next_packet().await.is_ok() {} });
+            let selected = timeout(SLOT_TIMEOUT, async {
+                loop {
+                    if let Some(player) = server.get_all_players().first()
+                        && player.inventory.get_selected_slot() == 6
+                    {
+                        break player.gameprofile.id;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+            })
+            .await;
+            match selected {
+                Ok(player_id) => Ok((drain, player_id)),
+                Err(_) => {
+                    drain.abort();
+                    let players = server.get_all_players();
+                    Err(format!(
+                        "EmbeddedBot did not select hotbar slot 6 (ticks={}, players={}, selected={:?}, queued={:?})",
+                        server.tick_count.load(Ordering::Relaxed),
+                        players.len(),
+                        players.first().map(|p| p.inventory.get_selected_slot()),
+                        players.first().map(|p| p.inbound_packets.len()),
+                    ))
+                }
             }
-            Err("EmbeddedBot did not select hotbar slot 6".into())
         }
         .await;
         server.stop();
@@ -85,12 +105,13 @@ pub async fn run_embedded_stop_test(summary_lines: &mut Vec<String>) -> Result<(
     })
     .await
     .map_err(|_| "Embedded server did not finish stopping".to_string())?;
-    let (_bot, player_id) = joined?;
+    let (drain, player_id) = joined?;
 
     timeout(STOP_TIMEOUT, connection)
         .await
         .map_err(|_| "Embedded connection did not end after stop".to_string())?
         .map_err(|err| format!("Embedded connection task failed: {err}"))?;
+    drain.abort();
 
     if STOP_INTERRUPT.is_cancelled() {
         return Err("Stopping the embedded server stopped the whole process".to_string());

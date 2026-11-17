@@ -322,3 +322,25 @@ impl EntityBase for FireworkRocketEntity {
         self.explode_and_remove(&world);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rocket_lifetime_preserves_configured_flight_power() {
+        // Same random seed isolates the ten-tick contribution of each power level (#4089).
+        let lifetime = |power| {
+            let mut stack = ItemStack::new(1, &Item::FIREWORK_ROCKET);
+            stack.set_data_component(FireworksImpl::new(power, Vec::new()));
+            let mut random = RandomGenerator::Xoroshiro(Xoroshiro::from_seed(42));
+            FireworkRocketEntity::compute_lifetime(&stack, &mut random)
+        };
+        let first = lifetime(1);
+        let second = lifetime(2);
+        let third = lifetime(3);
+        assert!((20..=31).contains(&first));
+        assert_eq!(second, first + 10);
+        assert_eq!(third, first + 20);
+    }
+}

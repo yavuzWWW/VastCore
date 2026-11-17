@@ -3,13 +3,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use pumpkin_core::server::Server;
+use pumpkin_core::{server::Server, world::BlockFlags};
 use pumpkin_data::{
-    data_component_impl::EquipmentSlot, dimension::Dimension, entity::EntityPose, item::Item,
+    Block, data_component_impl::EquipmentSlot, dimension::Dimension, entity::EntityPose, item::Item,
     item_stack::ItemStack,
 };
 use pumpkin_protocol::java::server::play::Action;
-use pumpkin_util::{GameMode, math::vector3::Vector3};
+use pumpkin_util::{
+    GameMode,
+    math::{position::BlockPos, vector3::Vector3},
+};
 
 use crate::bot::{HeadlessBot, MAX_POLL_TICKS};
 
@@ -49,17 +52,36 @@ pub async fn run_elytra_tests(
     let old_chest = inventory.get_slot(chest);
     let old_slot = inventory.get_selected_slot();
     let old_mode = player.gamemode.load();
-    let ground = bot.position;
+    let original_pos = bot.position;
+    // Use a known dry, open-air fixture rather than the random spawn terrain.
+    let ground = Vector3::new(
+        original_pos.x.floor() + 0.5,
+        300.0,
+        original_pos.z.floor() + 0.5,
+    );
+    let floor = BlockPos::floored(ground.x, ground.y - 1.0, ground.z);
+    let previous_floor = world.get_block_state(&floor).id;
+    world.set_block_state(&floor, Block::STONE.default_state.id, BlockFlags::NOTIFY_ALL);
     let air = ground + Vector3::new(0.0, 0.25, 0.0);
     player.set_flying(false);
     let _ = player.set_gamemode(GameMode::Survival);
     inventory.set_slot(chest, ItemStack::new(1, &Item::ELYTRA));
 
+    bot.move_to(ground, true).await?;
+    wait_for(
+        server,
+        || entity.pos.load().squared_distance_to_vec(&ground) < 1.0e-6
+            && entity.on_ground.load(Ordering::Relaxed),
+        "elytra test player did not reach the dry platform",
+    )
+    .await?;
     bot.move_to(air, false).await?;
     wait_for(
         server,
-        || !entity.on_ground.load(Ordering::Relaxed),
-        "elytra test player did not become airborne",
+        || entity.pos.load().squared_distance_to_vec(&air) < 1.0e-6
+            && !entity.on_ground.load(Ordering::Relaxed)
+            && player.can_glide(),
+        "elytra test player did not reach a valid airborne state",
     )
     .await?;
     bot.send_player_command(entity.entity_id, Action::StartFlyingElytra)
@@ -149,7 +171,15 @@ pub async fn run_elytra_tests(
     let _ = player.set_gamemode(old_mode);
     inventory.set_slot(chest, old_chest);
     inventory.set_selected_slot(old_slot);
-    bot.move_to(ground, true).await?;
+    player.living_entity.fall_distance.store(0.0);
+    bot.move_to(original_pos, true).await?;
+    wait_for(
+        server,
+        || entity.pos.load().squared_distance_to_vec(&original_pos) < 1.0e-6,
+        "elytra test player did not return to its original position",
+    )
+    .await?;
+    world.set_block_state(&floor, previous_floor, BlockFlags::NOTIFY_ALL);
 
     summary.push(format!(
         "[PASS] bot:elytra_state_transitions ({}ms)",

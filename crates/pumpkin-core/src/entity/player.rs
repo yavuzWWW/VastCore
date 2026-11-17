@@ -3641,7 +3641,8 @@ impl Player {
                     .equipment_slot_index(slot)
                     .is_some_and(|index| {
                         let stack = self.inventory.get_slot(index);
-                        stack.get_data_component::<GliderImpl>().is_some()
+                        !stack.is_empty()
+                            && stack.get_data_component::<GliderImpl>().is_some()
                             && stack
                                 .get_data_component::<EquippableImpl>()
                                 .is_some_and(|equippable| equippable.slot == slot)
@@ -3753,6 +3754,10 @@ impl Player {
                 let slots = self.glider_slots();
                 if !slots.is_empty() {
                     self.damage_item_in_slot(&slots[rand::random_range(0..slots.len())], 1);
+                    // A glider that just reached its unusable durability must stop now.
+                    if !self.reconcile_fall_flying() {
+                        return;
+                    }
                 }
             }
             self.world().emit_game_event(
