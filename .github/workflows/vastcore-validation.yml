@@ -13,11 +13,16 @@ concurrency:
   group: vastcore-validation-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
   regression:
-    name: Storage and protocol regressions (${{ matrix.os }})
+    name: Workspace regressions (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -29,8 +34,61 @@ jobs:
           persist-credentials: false
       - run: rustup update stable
       - run: rustup component add rustfmt clippy
+      - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: vastcore-${{ runner.os }}-${{ runner.arch }}
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked -p pumpkin-world --lib data::player_data::tests
-      - run: cargo test --locked -p pumpkin-protocol --lib
-      - run: cargo clippy --locked -p pumpkin-world -p pumpkin-protocol --all-targets --all-features -- -D warnings
+      - run: cargo nextest run --locked --workspace --no-tests=pass --profile default
+      - run: cargo test --locked --doc -p pumpkin-world -p pumpkin-protocol -p pumpkin-core
+      - run: cargo clippy --locked -p pumpkin-world -p pumpkin-protocol -p pumpkin-tester --all-targets --all-features -- -D warnings
+
+  gameplay:
+    name: Live integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - run: rustup update stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: vastcore-${{ runner.os }}-${{ runner.arch }}
+          save-if: false
+      - name: Build standalone server and test runner
+        run: cargo build --locked -p pumpkin -p pumpkin-tester
+      - name: Standalone TCP, save and restart checks
+        id: smoke
+        run: python .github/scripts/vastcore_smoke.py --binary target/debug/pumpkin --logs vastcore-test-logs
+      - name: Headless clients and required Minecraft GameTests
+        if: ${{ !cancelled() && steps.smoke.outcome != 'skipped' }}
+        run: cargo run --locked -p pumpkin-tester
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: vastcore-smoke-${{ runner.os }}
+          path: vastcore-test-logs/
+          if-no-files-found: warn
+
+  acceptance:
+    name: Development acceptance
+    if: always()
+    needs: [regression, gameplay]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful test matrices
+        env:
+          REGRESSION: ${{ needs.regression.result }}
+          GAMEPLAY: ${{ needs.gameplay.result }}
+        run: |
+          test "$REGRESSION" = success
+          test "$GAMEPLAY" = success
