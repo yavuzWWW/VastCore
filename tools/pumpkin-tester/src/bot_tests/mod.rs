@@ -1,5 +1,6 @@
 mod block_tuning_and_invert;
 mod commands_and_gamemode;
+mod elytra;
 mod embedded_stop;
 mod login_and_movement;
 mod loot_tables;
@@ -25,6 +26,8 @@ pub async fn run_bot_tests(
 
     let (mut bot1, bot2) =
         login_and_movement::run_login_and_movement_tests(server, addr, summary_lines).await?;
+
+    elytra::run_elytra_tests(server, &mut bot1, summary_lines).await?;
 
     commands_and_gamemode::run_commands_and_gamemode_tests(
         server,
