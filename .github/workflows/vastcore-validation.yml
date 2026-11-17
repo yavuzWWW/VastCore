@@ -39,9 +39,13 @@ jobs:
         with:
           shared-key: vastcore-${{ runner.os }}-${{ runner.arch }}
       - run: cargo fmt --all -- --check
+        id: formatting
       - run: cargo nextest run --locked --workspace --no-tests=pass --profile default
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
       - run: cargo test --locked --doc -p pumpkin-world -p pumpkin-protocol -p pumpkin-core
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
       - run: cargo clippy --locked -p pumpkin-world -p pumpkin-protocol -p pumpkin-core -p pumpkin-tester --all-targets --all-features -- -D warnings
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
 
   gameplay:
     name: Live integration (${{ matrix.os }})

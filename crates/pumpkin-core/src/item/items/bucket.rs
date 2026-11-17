@@ -367,6 +367,18 @@ fn try_place_powder_snow(
     Some(target_pos)
 }
 
+/// Aquatic LiquidBlockContainers already hold source water without a waterlogged
+/// property. Emptying a water or mob bucket into them must not replace the plant.
+fn contains_plant_water(block: &Block) -> bool {
+    matches!(
+        block.id,
+        pumpkin_data::BlockId::SEAGRASS
+            | pumpkin_data::BlockId::TALL_SEAGRASS
+            | pumpkin_data::BlockId::KELP
+            | pumpkin_data::BlockId::KELP_PLANT
+    )
+}
+
 fn try_place_liquid(
     world: &Arc<World>,
     item: &Item,
@@ -386,13 +398,21 @@ fn try_place_liquid(
     let can_waterlog_clicked =
         is_water && !is_sneaking && block.is_waterloggable() && !block.is_waterlogged(state.id);
 
-    let place_pos = if can_waterlog_clicked {
+    let place_pos = if can_waterlog_clicked || (is_water && contains_plant_water(block)) {
         pos
     } else {
         pos.offset(direction.to_offset())
     };
 
     let (target_block, target_state) = world.get_block_and_state(&place_pos);
+    if is_water && contains_plant_water(target_block) {
+        // The existing source satisfies bucket placement; the caller still handles
+        // emptying the bucket, sounds, and releasing a contained mob at this position.
+        if should_evaporate_in_nether(item, world) {
+            play_bucket_evaporation(world, &place_pos.to_f64());
+        }
+        return Some(place_pos);
+    }
     let can_waterlog_target = is_water
         && target_block.is_waterloggable()
         && !target_block.is_waterlogged(target_state.id);
@@ -730,5 +750,55 @@ impl ItemBehaviour for MilkBucketItem {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::ai::test_support::world;
+    use pumpkin_util::math::vector2::Vector2;
+    use pumpkin_world::chunk::ChunkData;
+
+    #[tokio::test]
+    async fn water_and_mob_buckets_keep_aquatic_plants_and_existing_water()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let chunk = ChunkData::empty_sync(0, 0);
+        world
+            .level
+            .loaded_chunks
+            .insert(Vector2::new(0, 0), chunk.clone());
+        let pos = BlockPos::new(5, 64, 5);
+        let below = pos.down();
+
+        for plant in [
+            &Block::SEAGRASS,
+            &Block::TALL_SEAGRASS,
+            &Block::KELP,
+            &Block::KELP_PLANT,
+        ] {
+            chunk.set_block_absolute_y(5, 64, 5, plant.default_state.id);
+            chunk.set_block_absolute_y(5, 65, 5, Block::AIR.default_state.id);
+            chunk.set_block_absolute_y(5, 63, 5, Block::STONE.default_state.id);
+            for item in [&Item::WATER_BUCKET, &Item::COD_BUCKET, &Item::AXOLOTL_BUCKET] {
+                assert_eq!(
+                    try_place_liquid(&world, item, pos, BlockDirection::Up, false),
+                    Some(pos)
+                );
+                assert_eq!(
+                    try_place_liquid(&world, item, below, BlockDirection::Up, false),
+                    Some(pos)
+                );
+                assert_eq!(world.get_block_state_id(&pos), plant.default_state.id);
+                assert_eq!(
+                    world.get_block_state_id(&pos.up()),
+                    Block::AIR.default_state.id
+                );
+            }
+        }
+        world.level.shutdown().await;
+        Ok(())
     }
 }

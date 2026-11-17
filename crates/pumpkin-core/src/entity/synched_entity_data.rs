@@ -156,11 +156,7 @@ impl SynchedEntityData {
         self.serialize_dirty(version, true)
     }
 
-    fn serialize_dirty(
-        &self,
-        version: &JavaMinecraftVersion,
-        consume: bool,
-    ) -> Option<Box<[u8]>> {
+    fn serialize_dirty(&self, version: &JavaMinecraftVersion, consume: bool) -> Option<Box<[u8]>> {
         if !self.is_dirty.load(Ordering::Acquire) {
             return None;
         }
