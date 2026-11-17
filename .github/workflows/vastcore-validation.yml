@@ -1,0 +1,36 @@
+name: VastCore validation
+
+on:
+  push:
+    branches:
+      - production-dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vastcore-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Storage and protocol regressions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - run: rustup update stable
+      - run: rustup component add rustfmt clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked -p pumpkin-world --lib data::player_data::tests
+      - run: cargo test --locked -p pumpkin-protocol --lib java::packet_decoder::tests
+      - run: cargo clippy --locked -p pumpkin-world -p pumpkin-protocol --all-targets --all-features -- -D warnings
