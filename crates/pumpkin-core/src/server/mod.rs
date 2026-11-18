@@ -803,14 +803,11 @@ impl Server {
                     };
 
                     // TODO: Config if we want increase online
-                    if let Some(config) = config {
-                        // TODO: Config so we can also just ignore this hehe
-                        if config.server_listing {
-                            self.listing
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .add_player(&player);
-                        }
+                    if config.is_some_and(|config| config.server_listing) {
+                        self.listing
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .add_player(&player);
                     }
 
                     let player_dto = crate::net::management::dto::PlayerDto::new(

@@ -362,11 +362,11 @@ impl Mob for AxolotlEntity {
 // Use the same capture and release path as fish and tadpoles (upstream #3933 and #3971).
 impl Bucketable for AxolotlEntity {
     fn is_from_bucket(&self) -> bool {
-        AxolotlEntity::is_from_bucket(self)
+        Self::is_from_bucket(self)
     }
 
     fn set_from_bucket(&self, from_bucket: bool) {
-        AxolotlEntity::set_from_bucket(self, from_bucket);
+        Self::set_from_bucket(self, from_bucket);
     }
 
     fn bucket_item(&self) -> &'static Item {

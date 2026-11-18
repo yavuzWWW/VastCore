@@ -297,8 +297,8 @@ mod tests {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     control.set_wanted_position(5.0, 67.0, 7.0, 1.0);
-                    control.tick(mob);
-                }
+                    control.tick(mob)
+                };
                 mob.travel_in_water(entity.as_ref(), 0.08, false);
             }
             let pos = living.entity.pos.load();

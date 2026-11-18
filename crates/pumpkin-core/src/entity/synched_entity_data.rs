@@ -147,16 +147,16 @@ impl SynchedEntityData {
 
     /// Serializes the values that changed since the last drain, without clearing them.
     pub fn pack_dirty_for_version(&self, version: &JavaMinecraftVersion) -> Option<Box<[u8]>> {
-        self.serialize_dirty(version, false)
+        self.serialize_dirty(*version, false)
     }
 
     /// Atomically serializes and clears pending changes. A concurrent setter after the
     /// snapshot remains dirty for the next send, rather than being cleared by the old send.
     pub fn take_dirty_for_version(&self, version: &JavaMinecraftVersion) -> Option<Box<[u8]>> {
-        self.serialize_dirty(version, true)
+        self.serialize_dirty(*version, true)
     }
 
-    fn serialize_dirty(&self, version: &JavaMinecraftVersion, consume: bool) -> Option<Box<[u8]>> {
+    fn serialize_dirty(&self, version: JavaMinecraftVersion, consume: bool) -> Option<Box<[u8]>> {
         if !self.is_dirty.load(Ordering::Acquire) {
             return None;
         }
@@ -173,7 +173,7 @@ impl SynchedEntityData {
                 let before_len = buf.len();
                 if item
                     .serializer
-                    .write(item.tracked.id, item.tracked.r#type, &mut buf, version)
+                    .write(item.tracked.id, item.tracked.r#type, &mut buf, &version)
                     .is_ok()
                 {
                     has_any |= buf.len() > before_len;

@@ -2785,8 +2785,8 @@ mod tests {
                             next.speed_modifier,
                         );
                     }
-                    control.tick(cod.as_ref());
-                }
+                    control.tick(cod.as_ref())
+                };
                 cod.fish_travel_in_water(cod.as_ref());
             }
             positions.push(living.entity.pos.load());

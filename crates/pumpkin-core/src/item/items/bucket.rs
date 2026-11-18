@@ -367,9 +367,9 @@ fn try_place_powder_snow(
     Some(target_pos)
 }
 
-/// Aquatic LiquidBlockContainers already hold source water without a waterlogged
+/// Aquatic `LiquidBlockContainers` already hold source water without a waterlogged
 /// property. Emptying a water or mob bucket into them must not replace the plant.
-fn contains_plant_water(block: &Block) -> bool {
+const fn contains_plant_water(block: &Block) -> bool {
     matches!(
         block.id,
         pumpkin_data::BlockId::SEAGRASS
@@ -782,7 +782,11 @@ mod tests {
             chunk.set_block_absolute_y(5, 64, 5, plant.default_state.id);
             chunk.set_block_absolute_y(5, 65, 5, Block::AIR.default_state.id);
             chunk.set_block_absolute_y(5, 63, 5, Block::STONE.default_state.id);
-            for item in [&Item::WATER_BUCKET, &Item::COD_BUCKET, &Item::AXOLOTL_BUCKET] {
+            for item in [
+                &Item::WATER_BUCKET,
+                &Item::COD_BUCKET,
+                &Item::AXOLOTL_BUCKET,
+            ] {
                 assert_eq!(
                     try_place_liquid(&world, item, pos, BlockDirection::Up, false),
                     Some(pos)
