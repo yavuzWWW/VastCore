@@ -20,7 +20,7 @@ use crate::entity::{
     ageable::{AgeableData, AgeableMob},
     ai::{
         goal::{
-    active_target::ActiveTargetGoal, breed::BreedGoal, escape_danger::EscapeDangerGoal,
+            active_target::ActiveTargetGoal, breed::BreedGoal, escape_danger::EscapeDangerGoal,
             follow_parent::FollowParentGoal, look_around::RandomLookAroundGoal,
             look_at_entity::LookAtEntityGoal, melee_attack::MeleeAttackGoal, revenge::RevengeGoal,
             swim::SwimGoal, tempt::TemptGoal, try_find_water::TryFindWaterGoal,
@@ -512,8 +512,7 @@ mod tests {
     use pumpkin_util::math::vector3::Vector3;
 
     #[tokio::test]
-    async fn axolotl_swims_without_gravity_or_fluid_push()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn axolotl_swims_without_gravity_or_fluid_push() -> Result<(), Box<dyn std::error::Error>> {
         let folder = tempfile::tempdir()?;
         let world = world(&folder);
         let axolotl = AxolotlEntity::new(Entity::new(
