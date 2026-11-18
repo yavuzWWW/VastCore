@@ -1535,10 +1535,10 @@ mod tests {
                 Block::WATER.default_state.id
             );
 
-            let entities = world.get_entities_of_type_at_box(
-                &BoundingBox::from_block(&target),
-                |kind| kind == entity_type,
-            );
+            let entities = world
+                .get_entities_of_type_at_box(&BoundingBox::from_block(&target), |kind| {
+                    kind == entity_type
+                });
             assert_eq!(entities.len(), 1);
             let released = entities.first().ok_or("missing released mob")?;
             let mob = released

@@ -10,6 +10,7 @@ use pumpkin_core::{
     data::VanillaData,
     net::{PacketRateLimiter, java::pending::PendingConnection},
     serve_java_connection,
+    server::Server,
 };
 use tokio::time::timeout;
 
@@ -17,6 +18,30 @@ use crate::{bot::HeadlessBot, harness};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(120);
 const SLOT_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn wait_for_selected_slot(server: &Server) -> Result<uuid::Uuid, String> {
+    timeout(SLOT_TIMEOUT, async {
+        loop {
+            if let Some(player) = server.get_all_players().first()
+                && player.inventory.get_selected_slot() == 6
+            {
+                break player.gameprofile.id;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        let players = server.get_all_players();
+        format!(
+            "EmbeddedBot did not select hotbar slot 6 (ticks={}, players={}, selected={:?}, queued={:?})",
+            server.tick_count.load(Ordering::Relaxed),
+            players.len(),
+            players.first().map(|p| p.inventory.get_selected_slot()),
+            players.first().map(|p| p.inbound_packets.len()),
+        )
+    })
+}
 
 pub async fn run_embedded_stop_test(summary_lines: &mut Vec<String>) -> Result<(), String> {
     let test_start = Instant::now();
@@ -70,29 +95,11 @@ pub async fn run_embedded_stop_test(summary_lines: &mut Vec<String>) -> Result<(
             // Unlike TCP, the in-memory duplex stream has only 64 KiB of capacity.
             // Consume outgoing chunks and metadata so the embedded transport can progress.
             let drain = tokio::spawn(async move { while bot.next_packet().await.is_ok() {} });
-            let selected = timeout(SLOT_TIMEOUT, async {
-                loop {
-                    if let Some(player) = server.get_all_players().first()
-                        && player.inventory.get_selected_slot() == 6
-                    {
-                        break player.gameprofile.id;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await;
-            match selected {
+            match wait_for_selected_slot(&server).await {
                 Ok(player_id) => Ok((drain, player_id)),
-                Err(_) => {
+                Err(err) => {
                     drain.abort();
-                    let players = server.get_all_players();
-                    Err(format!(
-                        "EmbeddedBot did not select hotbar slot 6 (ticks={}, players={}, selected={:?}, queued={:?})",
-                        server.tick_count.load(Ordering::Relaxed),
-                        players.len(),
-                        players.first().map(|p| p.inventory.get_selected_slot()),
-                        players.first().map(|p| p.inbound_packets.len()),
-                    ))
+                    Err(err)
                 }
             }
         }

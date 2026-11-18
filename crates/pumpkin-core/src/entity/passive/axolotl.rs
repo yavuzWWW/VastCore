@@ -18,12 +18,15 @@ use rand::RngExt;
 use crate::entity::{
     Entity, EntityBase,
     ageable::{AgeableData, AgeableMob},
-    ai::goal::{
-        active_target::ActiveTargetGoal, breed::BreedGoal, escape_danger::EscapeDangerGoal,
-        follow_parent::FollowParentGoal, look_around::RandomLookAroundGoal,
-        look_at_entity::LookAtEntityGoal, melee_attack::MeleeAttackGoal, revenge::RevengeGoal,
-        swim::SwimGoal, tempt::TemptGoal, try_find_water::TryFindWaterGoal,
-        wander_around::WanderAroundGoal,
+    ai::{
+        goal::{
+    active_target::ActiveTargetGoal, breed::BreedGoal, escape_danger::EscapeDangerGoal,
+            follow_parent::FollowParentGoal, look_around::RandomLookAroundGoal,
+            look_at_entity::LookAtEntityGoal, melee_attack::MeleeAttackGoal, revenge::RevengeGoal,
+            swim::SwimGoal, tempt::TemptGoal, try_find_water::TryFindWaterGoal,
+            wander_around::WanderAroundGoal,
+        },
+        pathfinder::{Navigator, node::PathType},
     },
     bucketable::{Bucketable, bucket_mob_pickup},
     mob::{
@@ -35,6 +38,10 @@ use crate::entity::{
 };
 
 use crate::world::World;
+
+use controls::{AxolotlLookControl, AxolotlMoveControl};
+
+mod controls;
 
 const MAX_AIR_SUPPLY: i32 = 6000;
 const RARE_VARIANT_CHANCE: u32 = 1200;
@@ -100,7 +107,23 @@ pub struct AxolotlEntity {
 impl AxolotlEntity {
     pub fn new(entity: Entity) -> Arc<Self> {
         entity.air_supply.store(MAX_AIR_SUPPLY, Ordering::Relaxed);
-        let mob_entity = MobEntity::new(entity);
+        let mut mob_entity = MobEntity::new(entity);
+        let mut navigator = Navigator::amphibious(false);
+        navigator.set_pathfinding_malus(PathType::Water, 0.0);
+        *mob_entity
+            .navigator
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = navigator;
+        *mob_entity
+            .move_control
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Box::new(AxolotlMoveControl::default());
+        *mob_entity
+            .look_control
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Box::new(AxolotlLookControl::default());
         let axolotl = Self {
             mob_entity,
             ageable_data: AgeableData::default(),
@@ -325,6 +348,29 @@ impl Mob for AxolotlEntity {
         world.is_unobstructed(self.get_entity())
     }
 
+    fn get_max_look_pitch_change(&self) -> f32 {
+        1.0
+    }
+
+    fn get_max_head_rotation(&self) -> f32 {
+        1.0
+    }
+
+    fn mob_is_pushed_by_fluids(&self) -> bool {
+        false
+    }
+
+    fn travel_in_water(&self, caller: &dyn EntityBase, _gravity: f64, _falling: bool) {
+        let living = &self.mob_entity.living_entity;
+        let entity = &living.entity;
+        entity.update_velocity_from_input(
+            living.movement_input.load(),
+            f64::from(living.get_speed()),
+        );
+        living.make_move(caller);
+        entity.velocity.store(entity.velocity.load() * 0.9);
+    }
+
     fn get_walk_target_value(&self, _pos: &BlockPos) -> f32 {
         0.0
     }
@@ -464,6 +510,82 @@ mod tests {
     use super::*;
     use crate::entity::ai::test_support::world;
     use pumpkin_util::math::vector3::Vector3;
+
+    #[tokio::test]
+    async fn axolotl_swims_without_gravity_or_fluid_push()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let axolotl = AxolotlEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(5.5, 64.0, 5.5),
+            &EntityType::AXOLOTL,
+        ));
+        let living = &axolotl.mob_entity.living_entity;
+        let entity = axolotl.get_entity();
+        assert!(!EntityBase::is_pushed_by_fluids(axolotl.as_ref()));
+        let water_malus = axolotl
+            .mob_entity
+            .navigator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_pathfinding_malus(PathType::Water);
+        assert!(water_malus.abs() < f32::EPSILON);
+        entity.touching_water.store(true, Ordering::Relaxed);
+        axolotl.mob_entity.set_speed(0.5);
+        living.movement_input.store(Vector3::new(0.0, 0.0, 1.0));
+        axolotl.travel_in_water(axolotl.as_ref(), 0.08, false);
+        let velocity = entity.velocity.load();
+        assert!((velocity.z - 0.45).abs() < 1e-6);
+        assert!(velocity.y.abs() < 1e-9);
+        assert!(entity.pos.load().z > 5.9);
+        world.level.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn axolotl_move_control_steers_upward_and_pauses_while_playing_dead()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::entity::ai::pathfinder::{node::Node, path::Path};
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let axolotl = AxolotlEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(5.5, 64.0, 5.5),
+            &EntityType::AXOLOTL,
+        ));
+        let living = &axolotl.mob_entity.living_entity;
+        let entity = axolotl.get_entity();
+        entity.touching_water.store(true, Ordering::Relaxed);
+        let target = BlockPos::new(5, 68, 12);
+        axolotl
+            .mob_entity
+            .navigator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .move_to_path(
+                Some(Path::new(vec![Node::new(target)], target, true)),
+                1.0,
+                living,
+            );
+        let mut control = axolotl
+            .mob_entity
+            .move_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        control.set_wanted_position(5.5, 68.0, 12.5, 1.0);
+        axolotl.set_playing_dead(true);
+        control.tick(axolotl.as_ref());
+        assert!(entity.pitch.load().abs() < f32::EPSILON);
+        assert!(control.has_wanted());
+        axolotl.set_playing_dead(false);
+        control.tick(axolotl.as_ref());
+        assert!(entity.pitch.load() < 0.0);
+        assert!(living.movement_input.load().y > 0.0);
+        drop(control);
+        world.level.shutdown().await;
+        Ok(())
+    }
 
     #[test]
     fn offspring_inherits_parent_variants_except_on_rare_roll() {

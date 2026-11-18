@@ -2771,22 +2771,21 @@ mod tests {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .tick(living);
-                {
-                    let mut control = cod
-                        .mob_entity
-                        .move_control
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if let Some(next) = next {
-                        control.set_wanted_position(
-                            next.position.x,
-                            next.position.y,
-                            next.position.z,
-                            next.speed_modifier,
-                        );
-                    }
-                    control.tick(cod.as_ref())
-                };
+                let mut control = cod
+                    .mob_entity
+                    .move_control
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(next) = next {
+                    control.set_wanted_position(
+                        next.position.x,
+                        next.position.y,
+                        next.position.z,
+                        next.speed_modifier,
+                    );
+                }
+                control.tick(cod.as_ref());
+                drop(control);
                 cod.fish_travel_in_water(cod.as_ref());
             }
             positions.push(living.entity.pos.load());
