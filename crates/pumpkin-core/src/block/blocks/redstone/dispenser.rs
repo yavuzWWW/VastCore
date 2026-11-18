@@ -1467,9 +1467,15 @@ mod tests {
     use super::*;
     use crate::entity::ai::test_support::world;
     use crate::entity::passive::abstract_horse::AbstractHorse;
+    use crate::entity::passive::axolotl::{AxolotlEntity, AxolotlVariant};
     use crate::entity::passive::copper_golem::EQUIPMENT_SLOT_ANTENNA;
     use crate::entity::passive::donkey::DonkeyEntity;
-    use pumpkin_data::data_component_impl::SulfurCubeContentImpl;
+    use pumpkin_data::data_component_impl::{
+        AxolotlVariantImpl, BucketEntityDataImpl, SulfurCubeContentImpl,
+    };
+    use pumpkin_nbt::compound::NbtCompound;
+    use pumpkin_util::math::vector2::Vector2;
+    use pumpkin_world::chunk::ChunkData;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -1490,6 +1496,63 @@ mod tests {
         DispenserBlock::dispense(&ctx, &dispenser, &mut dispensed);
         dispenser.set_stack(0, dispensed);
         dispenser.get_stack(0)
+    }
+
+    #[tokio::test]
+    async fn dispenser_releases_each_aquatic_bucket_with_stored_data() -> TestResult {
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let chunk = ChunkData::empty_sync(0, 0);
+        world
+            .level
+            .loaded_chunks
+            .insert(Vector2::new(0, 0), chunk.clone());
+
+        for (x, (item, entity_type)) in (2..).zip([
+            (&Item::AXOLOTL_BUCKET, &EntityType::AXOLOTL),
+            (&Item::COD_BUCKET, &EntityType::COD),
+            (&Item::SALMON_BUCKET, &EntityType::SALMON),
+            (&Item::TROPICAL_FISH_BUCKET, &EntityType::TROPICAL_FISH),
+            (&Item::PUFFERFISH_BUCKET, &EntityType::PUFFERFISH),
+            (&Item::TADPOLE_BUCKET, &EntityType::TADPOLE),
+        ]) {
+            let dispenser_pos = BlockPos::new(x, 64, 4);
+            let target = BlockPos::new(x, 64, 5);
+            let mut bucket = ItemStack::new(1, item);
+            let mut data = NbtCompound::new();
+            data.put_float("Health", 1.0);
+            bucket.set_data_component(BucketEntityDataImpl { nbt: Some(data) });
+            if entity_type == &EntityType::AXOLOTL {
+                bucket.set_data_component(AxolotlVariantImpl {
+                    value: "blue".into(),
+                });
+            }
+            let remainder = fire_dispenser(&world, dispenser_pos, Facing::South, bucket);
+            assert_eq!(remainder.item.id, Item::BUCKET.id);
+            assert_eq!(remainder.item_count, 1);
+            assert_eq!(
+                world.get_block_state_id(&target),
+                Block::WATER.default_state.id
+            );
+
+            let entities = world.get_entities_of_type_at_box(
+                &BoundingBox::from_block(&target),
+                |kind| kind == entity_type,
+            );
+            assert_eq!(entities.len(), 1);
+            let released = entities.first().ok_or("missing released mob")?;
+            let mob = released
+                .get_mob()
+                .and_then(|mob| mob.as_bucketable())
+                .ok_or("missing Bucketable")?;
+            assert!(mob.is_from_bucket());
+            assert!((mob.get_mob_entity().living_entity.health.load() - 1.0).abs() < f32::EPSILON);
+            if let Some(axolotl) = released.cast_any().downcast_ref::<AxolotlEntity>() {
+                assert_eq!(axolotl.get_variant(), AxolotlVariant::Blue);
+            }
+        }
+        world.level.shutdown().await;
+        Ok(())
     }
 
     #[tokio::test]

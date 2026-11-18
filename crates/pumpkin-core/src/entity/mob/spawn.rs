@@ -10,7 +10,7 @@ use rand::RngExt;
 use crate::entity::EntityBase;
 use crate::entity::attributes::{Modifier, ModifierOperation};
 use crate::entity::mob::MobEntity;
-use crate::entity::passive::fox::FoxVariant;
+use crate::entity::passive::{axolotl::AxolotlVariant, fox::FoxVariant};
 use crate::world::World;
 
 pub(crate) const RANDOM_SPAWN_BONUS_ID: &str = "minecraft:random_spawn_bonus";
@@ -47,6 +47,10 @@ pub enum SpawnGroupData {
     Rabbit {
         variant: RabbitVariant,
         group_size: u32,
+    },
+    Axolotl {
+        variants: [AxolotlVariant; 2],
+        size: u32,
     },
     Zombie {
         is_baby: bool,

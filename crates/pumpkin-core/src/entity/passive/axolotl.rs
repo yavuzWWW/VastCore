@@ -26,12 +26,18 @@ use crate::entity::{
         wander_around::WanderAroundGoal,
     },
     bucketable::{Bucketable, bucket_mob_pickup},
-    mob::{Mob, MobEntity},
+    mob::{
+        Mob, MobEntity,
+        spawn::{EntitySpawnReason, SpawnGroupData},
+    },
     passive::animal::Animal,
     player::Player,
 };
 
+use crate::world::World;
+
 const MAX_AIR_SUPPLY: i32 = 6000;
+const RARE_VARIANT_CHANCE: u32 = 1200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
@@ -63,17 +69,22 @@ impl AxolotlVariant {
 
     #[must_use]
     pub fn random_variant() -> Self {
-        let mut rng = rand::rng();
-        if rng.random_range(0..1200) == 0 {
-            Self::Blue
-        } else {
-            match rng.random_range(0..4) {
-                1 => Self::Wild,
-                2 => Self::Gold,
-                3 => Self::Cyan,
-                _ => Self::Lucy,
-            }
-        }
+        Self::from_id(rand::rng().random_range(0..4))
+    }
+}
+
+const fn offspring_variant(
+    parent: AxolotlVariant,
+    partner: AxolotlVariant,
+    rare: bool,
+    inherit_parent: bool,
+) -> AxolotlVariant {
+    if rare {
+        AxolotlVariant::Blue
+    } else if inherit_parent {
+        parent
+    } else {
+        partner
     }
 }
 
@@ -90,11 +101,10 @@ impl AxolotlEntity {
     pub fn new(entity: Entity) -> Arc<Self> {
         entity.air_supply.store(MAX_AIR_SUPPLY, Ordering::Relaxed);
         let mob_entity = MobEntity::new(entity);
-        let variant = AxolotlVariant::random_variant();
         let axolotl = Self {
             mob_entity,
             ageable_data: AgeableData::default(),
-            variant: AtomicI32::new(variant.id()),
+            variant: AtomicI32::new(AxolotlVariant::Lucy.id()),
             playing_dead: AtomicBool::new(false),
             from_bucket: AtomicBool::new(false),
             play_dead_ticks: AtomicI32::new(0),
@@ -229,6 +239,29 @@ impl AgeableMob for AxolotlEntity {
 }
 
 impl Animal for AxolotlEntity {
+    fn get_breed_offspring(&self, partner: &dyn EntityBase) -> Arc<dyn EntityBase> {
+        let entity = self.get_entity();
+        let baby = Self::new(Entity::new(
+            entity.world.load_full(),
+            entity.pos.load(),
+            &EntityType::AXOLOTL,
+        ));
+        let partner_variant = partner
+            .cast_any()
+            .downcast_ref::<Self>()
+            .map_or_else(|| self.get_variant(), Self::get_variant);
+        let mut rng = self.get_random();
+        let rare = rng.random_range(0..RARE_VARIANT_CHANCE) == 0;
+        baby.set_variant(offspring_variant(
+            self.get_variant(),
+            partner_variant,
+            rare,
+            rng.random::<bool>(),
+        ));
+        baby.mob_entity.set_persistence_required();
+        baby
+    }
+
     fn is_food(&self, item_stack: &ItemStack) -> bool {
         item_stack.item.has_tag(&tag::Item::MINECRAFT_AXOLOTL_FOOD)
     }
@@ -243,18 +276,45 @@ impl Mob for AxolotlEntity {
         Some(self)
     }
 
+    fn finalize_spawn(
+        &self,
+        _world: &Arc<World>,
+        reason: EntitySpawnReason,
+        group_data: Option<SpawnGroupData>,
+    ) -> Option<SpawnGroupData> {
+        if reason == EntitySpawnReason::Bucket {
+            return group_data;
+        }
+
+        let (variants, size) = match group_data {
+            Some(SpawnGroupData::Axolotl { variants, size }) => (variants, size),
+            _ => (
+                [
+                    AxolotlVariant::random_variant(),
+                    AxolotlVariant::random_variant(),
+                ],
+                0,
+            ),
+        };
+        self.set_variant(variants[self.get_random().random_range(0..2)]);
+        if size >= 2 {
+            self.set_age(-24000);
+        }
+        self.mob_entity.finalize_spawn_base();
+        Some(SpawnGroupData::Axolotl {
+            variants,
+            size: size + 1,
+        })
+    }
+
     fn mob_write_nbt(&self, nbt: &mut NbtCompound) {
         nbt.put_int("Variant", self.get_variant().id());
         nbt.put_bool("FromBucket", self.is_from_bucket());
     }
 
     fn mob_read_nbt(&self, nbt: &NbtCompound) {
-        if let Some(variant) = nbt.get_int("Variant") {
-            self.set_variant(AxolotlVariant::from_id(variant));
-        }
-        if let Some(from_bucket) = nbt.get_bool("FromBucket") {
-            self.set_from_bucket(from_bucket);
-        }
+        self.set_variant(AxolotlVariant::from_id(nbt.get_int("Variant").unwrap_or(0)));
+        self.set_from_bucket(nbt.get_bool("FromBucket").unwrap_or(false));
     }
 
     fn get_mob_entity(&self) -> &MobEntity {
@@ -404,6 +464,56 @@ mod tests {
     use super::*;
     use crate::entity::ai::test_support::world;
     use pumpkin_util::math::vector3::Vector3;
+
+    #[test]
+    fn offspring_inherits_parent_variants_except_on_rare_roll() {
+        let parent = AxolotlVariant::Cyan;
+        let partner = AxolotlVariant::Gold;
+        assert_eq!(offspring_variant(parent, partner, false, true), parent);
+        assert_eq!(offspring_variant(parent, partner, false, false), partner);
+        assert_eq!(
+            offspring_variant(parent, partner, true, true),
+            AxolotlVariant::Blue
+        );
+        assert_eq!(
+            offspring_variant(AxolotlVariant::Blue, partner, false, true),
+            AxolotlVariant::Blue
+        );
+    }
+
+    #[tokio::test]
+    async fn axolotl_groups_share_common_variants_and_bucket_spawn_preserves_data()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let world = world(&folder);
+        let mut group = None;
+        for index in 0..4 {
+            let axolotl = AxolotlEntity::new(Entity::new(
+                world.clone(),
+                Vector3::new(5.5, 64.0, 5.5),
+                &EntityType::AXOLOTL,
+            ));
+            assert_eq!(axolotl.get_variant(), AxolotlVariant::Lucy);
+            group = axolotl.finalize_spawn(&world, EntitySpawnReason::Natural, group);
+            let Some(SpawnGroupData::Axolotl { variants, size }) = &group else {
+                return Err("missing axolotl group".into());
+            };
+            assert_eq!(*size, index + 1);
+            assert!(
+                variants
+                    .iter()
+                    .all(|variant| *variant != AxolotlVariant::Blue)
+            );
+            assert!(variants.contains(&axolotl.get_variant()));
+            assert_eq!(axolotl.get_age() < 0, index >= 2);
+
+            axolotl.set_variant(AxolotlVariant::Blue);
+            group = axolotl.finalize_spawn(&world, EntitySpawnReason::Bucket, group);
+            assert_eq!(axolotl.get_variant(), AxolotlVariant::Blue);
+        }
+        world.level.shutdown().await;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn axolotl_rehydrates_in_water_and_loses_air_on_land()
